@@ -36,6 +36,24 @@ Resources:
       Tracing: Active
       Policies:
         - AWSXrayWriteOnlyAccess
+        - AWSSecretsManagerGetSecretValuePolicy:
+            SecretArn: !If
+              - DatabaseUseExistingResource
+              - !GetAtt DatabaseExistingResource.RootUserSecret
+              - !Ref DatabaseRootUserSecret
+        - Statement:
+            - Effect: Allow
+              Action:
+                - rds-data:BatchExecuteStatement
+                - rds-data:BeginTransaction
+                - rds-data:CommitTransaction
+                - rds-data:ExecuteStatement
+                - rds-data:RollbackTransaction
+              Resource:
+                - !If
+                  - DatabaseUseExistingResource
+                  - !Sub arn:aws:rds:${AWS::Region}:${AWS::AccountId}:cluster:${DatabaseExistingResource}
+                  - !Sub arn:aws:rds:${AWS::Region}:${AWS::AccountId}:cluster:${Database}
       Events:
         ApiGET:
           Type: Api
@@ -43,6 +61,102 @@ Resources:
             Path: /
             Method: GET
             RestApiId: !Ref Api
+      Environment:
+        Variables:
+          DB_ID: !If
+            - DatabaseUseExistingResource
+            - !Ref DatabaseExistingResource
+            - !Ref Database
+          DB_ADDRESS: !If
+            - DatabaseUseExistingResource
+            - !GetAtt DatabaseExistingResource.Endpoint.Address
+            - !GetAtt Database.Endpoint.Address
+          DB_PORT: !If
+            - DatabaseUseExistingResource
+            - !GetAtt DatabaseExistingResource.Endpoint.Port
+            - !GetAtt Database.Endpoint.Port
+          DB_ARN: !If
+            - DatabaseUseExistingResource
+            - !Sub arn:aws:rds:${AWS::Region}:${AWS::AccountId}:cluster:${DatabaseExistingResource}
+            - !Sub arn:aws:rds:${AWS::Region}:${AWS::AccountId}:cluster:${Database}
+          DB_ROOT_USER_SECRET_ARN: !If
+            - DatabaseUseExistingResource
+            - !GetAtt DatabaseExistingResource.RootUserSecret
+            - !Ref DatabaseRootUserSecret
+  Database:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      BackupRetentionPeriod: 1
+      DBSubnetGroupName: !Ref DatabaseSubnetGroup
+      Engine: aurora
+      EngineMode: serverless
+      MasterUsername: !Sub '{{resolve:secretsmanager:${DatabaseRootUserSecret}:SecretString:username}}'
+      MasterUserPassword: !Sub '{{resolve:secretsmanager:${DatabaseRootUserSecret}:SecretString:password}}'
+      EnableHttpEndpoint: true
+      ScalingConfiguration:
+        AutoPause: false
+        MinCapacity: 2
+        MaxCapacity: 256
+      StorageEncrypted: true
+      VpcSecurityGroupIds:
+        - !Ref DatabaseSecurityGroup
+    Condition: DatabaseCreateNewResource
+  DatabaseSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: !Sub
+        - Stack ${StackTagName} Environment ${EnvironmentTagName} Database ${ResourceName} VPC Subnets
+        - ResourceName: Database
+      SubnetIds: !Ref DefaultVPCSubnets
+      Tags:
+        - Key: Name
+          Value: !Sub
+            - Stack ${StackTagName} Environment ${EnvironmentTagName} Database ${ResourceName} VPC Subnets
+            - ResourceName: Database
+    Condition: DatabaseCreateNewResource
+  DatabaseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Database Security Group
+      SecurityGroupIngress:
+        CidrIp: 0.0.0.0/0
+        FromPort: 3306
+        IpProtocol: tcp
+        ToPort: 3306
+      Tags:
+        - Key: Name
+          Value: !Sub
+            - Stack ${StackTagName} Environment ${EnvironmentTagName} Database ${ResourceName} VPC Security Group
+            - ResourceName: Database
+      VpcId: !Ref DefaultVPCId
+    Condition: DatabaseCreateNewResource
+  DatabaseRootUserSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: !Sub
+        - Root user login info for Stack ${StackTagName} Environment ${EnvironmentTagName} Database ${ResourceName}
+        - ResourceName: Database
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "root"}'
+        GenerateStringKey: password
+        PasswordLength: 16
+        ExcludeCharacters: '"@/\'
+      Name: !Sub /${EnvironmentTagName}/${StackTagName}/Database/RootUser
+    Condition: DatabaseCreateNewResource
+  DatabaseRootUserSecretAttachment:
+    Type: AWS::SecretsManager::SecretTargetAttachment
+    Properties:
+      SecretId: !Ref DatabaseRootUserSecret
+      TargetId: !Ref Database
+      TargetType: AWS::RDS::DBCluster
+    Condition: DatabaseCreateNewResource
+  DatabaseExistingResource:
+    Type: Custom::StackeryExistingResource
+    Properties:
+      ServiceToken: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:stackery-agent-commander
+      Type: database
+      Data: arn:aws:rds:us-east-1:243320375585:db:ariastest
+    Condition: DatabaseUseExistingResource
 Parameters:
   StackTagName:
     Type: String
@@ -53,3 +167,15 @@ Parameters:
   EnvironmentAPIGatewayStageName:
     Type: String
     Description: Environment name used for API Gateway Stage names (injected by Stackery at deployment time)
+  DefaultVPCId:
+    Type: AWS::EC2::VPC::Id
+    Description: AWS account-specific default VPC ID (injected by Stackery at deployment time)
+  DefaultVPCSubnets:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: AWS account-specific default VPC subnets (injected by Stackery at deployment time)
+Conditions:
+  DatabaseCreateNewResource: !Equals
+    - 'false'
+    - 'true'
+  DatabaseUseExistingResource: !Not
+    - Condition: DatabaseCreateNewResource
