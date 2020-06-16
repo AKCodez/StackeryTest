@@ -75,10 +75,7 @@ Resources:
             - DatabaseUseExistingResource
             - !GetAtt DatabaseExistingResource.Endpoint.Port
             - !GetAtt Database.Endpoint.Port
-          DB_ARN: !If
-            - DatabaseUseExistingResource
-            - !Sub arn:aws:rds:${AWS::Region}:${AWS::AccountId}:cluster:${DatabaseExistingResource}
-            - !Sub arn:aws:rds:${AWS::Region}:${AWS::AccountId}:cluster:${Database}
+          DB_ARN: arn:aws:rds:us-east-1:243320375585:db:ariastest
           DB_ROOT_USER_SECRET_ARN: !If
             - DatabaseUseExistingResource
             - !GetAtt DatabaseExistingResource.RootUserSecret
